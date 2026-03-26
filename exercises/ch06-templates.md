@@ -721,3 +721,144 @@ void print_first(const Container& c) {
 10. A lambda can be passed as a template argument. (§6.3.2, p.67)
 
 <details><summary>Answer</summary>True. Lambdas are objects with a unique type and can be passed to function templates.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Generic LRU Cache (§6.2–6.3, p.61–67)
+
+**Motivation:** You're building a caching layer for a web server. The cache stores key-value pairs with a maximum capacity. When the cache is full and a new entry is added, the Least Recently Used entry is evicted. Both `get` and `put` must be O(1) average.
+
+**Signatures:**
+
+```cpp
+template<typename K, typename V>
+class LRUCache {
+public:
+    explicit LRUCache(int capacity);
+
+    // Returns pointer to value if found (marks as recently used), nullptr otherwise
+    V* get(const K& key);
+
+    // Insert or update. Evicts LRU if at capacity.
+    void put(const K& key, const V& value);
+
+    int size() const;
+    int capacity() const;
+};
+```
+
+**Test Scenarios:**
+
+1. `LRUCache<int, std::string> cache(3)`. Put keys 1, 2, 3. `get(1)` returns `"one"`.
+2. Put key 4 — evicts key 2 (LRU since 1 was accessed). `get(2)` returns `nullptr`.
+3. Works with `LRUCache<std::string, int>` — same template, different types.
+
+**Constraints:**
+- Must be a class template parameterized on K and V
+- Use `std::list` for ordering (O(1) move-to-front) and `std::unordered_map` for O(1) lookup
+- Use non-type template parameters where useful
+- Template must work with any hashable key type and any value type
+- Demonstrate CTAD or explicit instantiation
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <list>
+#include <unordered_map>
+#include <string>
+
+template<typename K, typename V>
+class LRUCache {
+    int cap_;
+
+    // Doubly-linked list: front = most recently used, back = LRU
+    // Each node stores the key-value pair
+    using Entry = std::pair<K, V>;
+    std::list<Entry> order_;
+
+    // Map from key to iterator in the list — O(1) lookup
+    std::unordered_map<K, typename std::list<Entry>::iterator> map_;
+
+    // Move an existing entry to the front (most recently used)
+    void touch(typename std::list<Entry>::iterator it) {
+        order_.splice(order_.begin(), order_, it);  // O(1) move
+    }
+
+    // Evict the least recently used entry (back of list)
+    void evict() {
+        auto& back = order_.back();
+        map_.erase(back.first);   // remove from map
+        order_.pop_back();         // remove from list
+    }
+
+public:
+    explicit LRUCache(int capacity) : cap_{capacity} {}
+
+    V* get(const K& key) {
+        auto it = map_.find(key);
+        if (it == map_.end())
+            return nullptr;   // cache miss
+        touch(it->second);    // mark as recently used
+        return &(it->second->second);  // pointer to value
+    }
+
+    void put(const K& key, const V& value) {
+        auto it = map_.find(key);
+        if (it != map_.end()) {
+            // Key exists — update value and move to front
+            it->second->second = value;
+            touch(it->second);
+            return;
+        }
+        // Key doesn't exist — check capacity
+        if (static_cast<int>(order_.size()) >= cap_)
+            evict();  // remove LRU entry
+        // Insert at front
+        order_.emplace_front(key, value);
+        map_[key] = order_.begin();
+    }
+
+    int size() const { return static_cast<int>(order_.size()); }
+    int capacity() const { return cap_; }
+};
+
+int main() {
+    // Scenario 1: basic operations
+    LRUCache<int, std::string> cache(3);
+    cache.put(1, "one");
+    cache.put(2, "two");
+    cache.put(3, "three");
+
+    if (auto* v = cache.get(1))
+        std::cout << "get(1): " << *v << '\n';  // "one"
+
+    // Scenario 2: eviction
+    // Access order now: 1 (just accessed), 3, 2 (LRU)
+    cache.put(4, "four");  // evicts key 2
+
+    std::cout << "get(2): " << (cache.get(2) ? "found" : "miss") << '\n';  // miss
+    std::cout << "get(3): " << (cache.get(3) ? *cache.get(3) : "miss") << '\n';  // "three"
+
+    std::cout << "size: " << cache.size() << '\n';  // 3
+
+    // Scenario 3: different types
+    LRUCache<std::string, int> scores(2);
+    scores.put("alice", 95);
+    scores.put("bob", 87);
+    scores.put("carol", 92);  // evicts "alice"
+    std::cout << "alice: " << (scores.get("alice") ? "found" : "miss") << '\n';  // miss
+    std::cout << "bob: " << *scores.get("bob") << '\n';  // 87
+}
+```
+
+Key decisions:
+- **`std::list`** provides O(1) splice for moving entries to front (§6.2 — template container).
+- **`std::unordered_map`** maps keys to list iterators for O(1) lookup (§6.2).
+- **Template parameters `K, V`** make the cache generic — works for any key/value types that satisfy the implicit requirements (hashable key, copyable value).
+- **`splice`** is the key operation: it moves a list node without copying, keeping all iterators valid.
+- **`V*` return from `get`** instead of `optional<V>` avoids copying the value — the caller gets a direct pointer.
+
+</details>

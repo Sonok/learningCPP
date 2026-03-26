@@ -661,3 +661,144 @@ int main() {
 10. In C++17, `if (auto n = size(); n > 0)` limits the scope of `n` to the if/else block. (§1.8, p.13)
 
 <details><summary>Answer</summary>True. The init-statement in `if` scopes the variable to the entire if/else construct.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Simple Order Book (§1.4–1.8, p.5–13)
+
+**Motivation:** You're building a simplified order book for a trading system. Each order has an ID, price, quantity, and side (buy/sell). The book must support adding orders, canceling by ID, and querying the best bid (highest buy) and best ask (lowest sell).
+
+**Signatures:**
+
+```cpp
+struct Order {
+    int id;
+    double price;
+    int qty;
+    bool is_buy;
+};
+
+class OrderBook {
+public:
+    void add_order(Order o);
+    bool cancel_order(int id);
+    const Order* best_bid() const;   // highest buy price, or nullptr
+    const Order* best_ask() const;   // lowest sell price, or nullptr
+    int count() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Add buy orders at 100, 102, 101. `best_bid()` returns the order at 102.
+2. Add sell orders at 105, 103, 104. `best_ask()` returns the order at 103.
+3. Cancel the best bid. `best_bid()` now returns the order at 101.
+
+**Constraints:**
+- Use only basic types, `struct`, arrays or `std::vector`, pointers, references
+- Use `const` and `constexpr` where appropriate
+- Use range-for loops (not index-based) where natural
+- No `<algorithm>` — implement your own linear search
+- All functions use pass-by-reference or pass-by-const-reference
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+
+struct Order {
+    int id;
+    double price;
+    int qty;
+    bool is_buy;
+};
+
+class OrderBook {
+    std::vector<Order> orders_;  // simple storage — no sorting needed
+public:
+    // Add an order to the book
+    void add_order(Order o) {
+        orders_.push_back(o);
+    }
+
+    // Cancel by ID — returns true if found and removed
+    bool cancel_order(int id) {
+        for (auto it = orders_.begin(); it != orders_.end(); ++it) {
+            if (it->id == id) {
+                // Swap with last and pop — O(1) removal, order doesn't matter
+                *it = orders_.back();
+                orders_.pop_back();
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Best bid: highest-priced buy order
+    const Order* best_bid() const {
+        const Order* best = nullptr;
+        for (const auto& o : orders_) {
+            if (o.is_buy) {
+                if (!best || o.price > best->price)
+                    best = &o;
+            }
+        }
+        return best;  // nullptr if no buys
+    }
+
+    // Best ask: lowest-priced sell order
+    const Order* best_ask() const {
+        const Order* best = nullptr;
+        for (const auto& o : orders_) {
+            if (!o.is_buy) {
+                if (!best || o.price < best->price)
+                    best = &o;
+            }
+        }
+        return best;  // nullptr if no sells
+    }
+
+    int count() const { return static_cast<int>(orders_.size()); }
+};
+
+int main() {
+    OrderBook book;
+
+    // Scenario 1: buy orders
+    book.add_order({1, 100.0, 10, true});
+    book.add_order({2, 102.0, 5,  true});
+    book.add_order({3, 101.0, 8,  true});
+
+    if (auto* bid = book.best_bid())
+        std::cout << "Best bid: $" << bid->price
+                  << " (id=" << bid->id << ")\n";  // $102, id=2
+
+    // Scenario 2: sell orders
+    book.add_order({4, 105.0, 3, false});
+    book.add_order({5, 103.0, 7, false});
+    book.add_order({6, 104.0, 2, false});
+
+    if (auto* ask = book.best_ask())
+        std::cout << "Best ask: $" << ask->price
+                  << " (id=" << ask->id << ")\n";  // $103, id=5
+
+    // Scenario 3: cancel best bid
+    book.cancel_order(2);
+    if (auto* bid = book.best_bid())
+        std::cout << "New best bid: $" << bid->price
+                  << " (id=" << bid->id << ")\n";  // $101, id=3
+
+    std::cout << "Total orders: " << book.count() << '\n';  // 5
+}
+```
+
+Key decisions:
+- **`const Order*` return** for queries — `nullptr` signals "no orders on that side," avoiding exceptions for a normal condition. Pointers are covered in §1.7.
+- **Swap-and-pop removal** avoids shifting elements — uses only basic pointer/reference operations.
+- **Range-for with `const auto&`** in queries avoids copies and respects const-correctness (§1.7, p.10).
+- **`const` member functions** on queries promise not to modify state (§1.6, p.9).
+
+</details>

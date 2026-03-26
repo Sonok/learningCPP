@@ -811,3 +811,186 @@ int main() {
 10. A derived class can override a non-virtual base class function. (§4.3, p.43)
 
 <details><summary>Answer</summary>False. Only virtual functions can be overridden. A non-virtual function in the derived class simply hides the base version.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Polymorphic Expression Tree (§4.2–4.4, p.39–47)
+
+**Motivation:** You're building a symbolic math evaluator. Expressions like `(3 + 4) * 2` are represented as a tree of nodes. Each node is either a literal number or a binary operation. The tree supports evaluation and conversion to a string representation.
+
+**Signatures:**
+
+```cpp
+class Expr {
+public:
+    virtual double eval() const = 0;
+    virtual std::string to_string() const = 0;
+    virtual ~Expr() = default;
+};
+
+class Literal : public Expr {
+    double value_;
+public:
+    explicit Literal(double v);
+    double eval() const override;
+    std::string to_string() const override;
+};
+
+class BinaryOp : public Expr {
+protected:
+    std::unique_ptr<Expr> left_, right_;
+public:
+    BinaryOp(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r);
+};
+
+class Add : public BinaryOp {
+public:
+    using BinaryOp::BinaryOp;
+    double eval() const override;
+    std::string to_string() const override;
+};
+
+class Multiply : public BinaryOp {
+public:
+    using BinaryOp::BinaryOp;
+    double eval() const override;
+    std::string to_string() const override;
+};
+
+// Helper factory
+std::unique_ptr<Expr> lit(double v);
+std::unique_ptr<Expr> add(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r);
+std::unique_ptr<Expr> mul(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r);
+```
+
+**Test Scenarios:**
+
+1. `lit(42)->eval()` returns `42.0`, `to_string()` returns `"42"`.
+2. `add(lit(3), lit(4))->eval()` returns `7.0`, `to_string()` returns `"(3 + 4)"`.
+3. `mul(add(lit(3), lit(4)), lit(2))` evaluates to `14.0`, `to_string()` returns `"((3 + 4) * 2)"`.
+
+**Constraints:**
+- Must use virtual dispatch (no `dynamic_cast` or type tags)
+- Children owned via `std::unique_ptr<Expr>` — no raw `new`/`delete` in user code
+- `Expr` must have a virtual destructor
+- Use `override` on all overriding functions
+- No slicing — everything through pointers/references
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <string>
+#include <memory>
+#include <sstream>
+#include <cmath>
+
+// Abstract base — defines the expression interface
+class Expr {
+public:
+    virtual double eval() const = 0;
+    virtual std::string to_string() const = 0;
+    virtual ~Expr() = default;  // virtual dtor: safe polymorphic deletion
+};
+
+// Leaf node: a numeric literal
+class Literal : public Expr {
+    double value_;
+public:
+    explicit Literal(double v) : value_{v} {}
+
+    double eval() const override { return value_; }
+
+    std::string to_string() const override {
+        // Clean formatting: no trailing zeros for whole numbers
+        if (value_ == std::floor(value_))
+            return std::to_string(static_cast<int>(value_));
+        std::ostringstream oss;
+        oss << value_;
+        return oss.str();
+    }
+};
+
+// Internal node: binary operation with two children
+class BinaryOp : public Expr {
+protected:
+    std::unique_ptr<Expr> left_;   // unique_ptr owns children
+    std::unique_ptr<Expr> right_;
+public:
+    BinaryOp(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r)
+        : left_{std::move(l)}, right_{std::move(r)} {}
+    // No custom destructor needed — unique_ptr handles cleanup
+};
+
+class Add : public BinaryOp {
+public:
+    using BinaryOp::BinaryOp;  // inherit constructor
+
+    double eval() const override {
+        return left_->eval() + right_->eval();  // virtual dispatch on children
+    }
+
+    std::string to_string() const override {
+        return "(" + left_->to_string() + " + " + right_->to_string() + ")";
+    }
+};
+
+class Multiply : public BinaryOp {
+public:
+    using BinaryOp::BinaryOp;
+
+    double eval() const override {
+        return left_->eval() * right_->eval();
+    }
+
+    std::string to_string() const override {
+        return "(" + left_->to_string() + " * " + right_->to_string() + ")";
+    }
+};
+
+// Factory helpers — hide make_unique details from caller
+std::unique_ptr<Expr> lit(double v) {
+    return std::make_unique<Literal>(v);
+}
+
+std::unique_ptr<Expr> add(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r) {
+    return std::make_unique<Add>(std::move(l), std::move(r));
+}
+
+std::unique_ptr<Expr> mul(std::unique_ptr<Expr> l, std::unique_ptr<Expr> r) {
+    return std::make_unique<Multiply>(std::move(l), std::move(r));
+}
+
+int main() {
+    // Scenario 1: literal
+    auto e1 = lit(42);
+    std::cout << e1->to_string() << " = " << e1->eval() << '\n';
+    // 42 = 42
+
+    // Scenario 2: addition
+    auto e2 = add(lit(3), lit(4));
+    std::cout << e2->to_string() << " = " << e2->eval() << '\n';
+    // (3 + 4) = 7
+
+    // Scenario 3: nested expression (3 + 4) * 2
+    auto e3 = mul(add(lit(3), lit(4)), lit(2));
+    std::cout << e3->to_string() << " = " << e3->eval() << '\n';
+    // ((3 + 4) * 2) = 14
+
+    // Scenario 4: deeper nesting (1 + 2) * (3 + 4)
+    auto e4 = mul(add(lit(1), lit(2)), add(lit(3), lit(4)));
+    std::cout << e4->to_string() << " = " << e4->eval() << '\n';
+    // ((1 + 2) * (3 + 4)) = 21
+}
+```
+
+Key decisions:
+- **Abstract `Expr` base** with pure virtuals creates a clean interface (§4.3).
+- **`unique_ptr` children** ensure automatic cleanup — no memory leaks even with deep trees (§4.4.1).
+- **`override`** on every virtual function catches signature mismatches at compile time (§4.3).
+- **Virtual destructor** on `Expr` ensures derived destructors run when deleting through base pointer (§4.3).
+- **Factory functions** (`lit`, `add`, `mul`) provide a clean DSL — all heap allocation is hidden behind `make_unique`.
+
+</details>

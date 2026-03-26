@@ -693,3 +693,179 @@ int main() {
 10. A structured binding `auto [x, y] = s;` requires `s` to be a `std::pair`. (§3.5.3, p.36)
 
 <details><summary>Answer</summary>False. Structured bindings work with any aggregate: pairs, tuples, structs, and arrays.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Mini Test Framework (§3.3–3.5, p.28–36)
+
+**Motivation:** You're building a lightweight test runner for a C++ project. It should let users register test cases (name + function), run all tests, catch exceptions thrown by failing tests, and report pass/fail with structured results.
+
+**Signatures:**
+
+```cpp
+namespace testing {
+
+struct TestResult {
+    std::string name;
+    bool passed;
+    std::string error_message;  // empty if passed
+};
+
+class TestRunner {
+public:
+    using TestFunc = std::function<void()>;
+
+    void add_test(const std::string& name, TestFunc func);
+    std::vector<TestResult> run_all();
+    void print_report(const std::vector<TestResult>& results) const;
+};
+
+// Assertion helpers
+void assert_true(bool condition, const std::string& msg = "assertion failed");
+void assert_equal(int expected, int actual);
+
+}  // namespace testing
+```
+
+**Test Scenarios:**
+
+1. Register 3 tests: one passes, one throws `std::runtime_error`, one fails an assertion. `run_all()` returns 3 results: 1 pass, 2 fail.
+2. `print_report` outputs formatted results with pass/fail counts.
+3. An exception thrown inside a test is caught and recorded — it doesn't crash the runner.
+
+**Constraints:**
+- Use a namespace (`testing::`) for all components
+- Use `try`/`catch` to isolate test failures
+- Use structured bindings to unpack `TestResult`
+- Throw standard exceptions (`std::runtime_error`)
+- Functions take arguments by `const&` where appropriate
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <functional>
+#include <stdexcept>
+
+namespace testing {
+
+struct TestResult {
+    std::string name;
+    bool passed;
+    std::string error_message;
+};
+
+// Assertion helpers — throw on failure
+void assert_true(bool condition, const std::string& msg = "assertion failed") {
+    if (!condition)
+        throw std::runtime_error(msg);
+}
+
+void assert_equal(int expected, int actual) {
+    if (expected != actual)
+        throw std::runtime_error(
+            "expected " + std::to_string(expected) +
+            " but got " + std::to_string(actual));
+}
+
+class TestRunner {
+public:
+    using TestFunc = std::function<void()>;
+
+private:
+    // Each registered test is a name + callable
+    struct TestCase {
+        std::string name;
+        TestFunc func;
+    };
+    std::vector<TestCase> tests_;
+
+public:
+    void add_test(const std::string& name, TestFunc func) {
+        tests_.push_back({name, std::move(func)});
+    }
+
+    // Run all tests, catching exceptions to isolate failures
+    std::vector<TestResult> run_all() {
+        std::vector<TestResult> results;
+        for (const auto& test : tests_) {
+            try {
+                test.func();  // run the test
+                results.push_back({test.name, true, ""});
+            } catch (const std::exception& e) {
+                // Test failed — record the error without crashing
+                results.push_back({test.name, false, e.what()});
+            } catch (...) {
+                results.push_back({test.name, false, "unknown exception"});
+            }
+        }
+        return results;
+    }
+
+    // Print a formatted report using structured bindings
+    void print_report(const std::vector<TestResult>& results) const {
+        int pass_count = 0, fail_count = 0;
+
+        for (const auto& [name, passed, error] : results) {
+            if (passed) {
+                std::cout << "  PASS: " << name << '\n';
+                ++pass_count;
+            } else {
+                std::cout << "  FAIL: " << name << " — " << error << '\n';
+                ++fail_count;
+            }
+        }
+
+        std::cout << "\nResults: " << pass_count << " passed, "
+                  << fail_count << " failed, "
+                  << results.size() << " total\n";
+    }
+};
+
+}  // namespace testing
+
+// ---- Usage ----
+int main() {
+    testing::TestRunner runner;
+
+    // Test 1: passes
+    runner.add_test("addition works", []() {
+        testing::assert_equal(4, 2 + 2);
+    });
+
+    // Test 2: fails with runtime_error
+    runner.add_test("always fails", []() {
+        throw std::runtime_error("intentional failure");
+    });
+
+    // Test 3: assertion failure
+    runner.add_test("wrong result", []() {
+        testing::assert_equal(5, 2 + 2);  // 4 != 5
+    });
+
+    auto results = runner.run_all();
+    runner.print_report(results);
+}
+```
+
+Expected output:
+```
+  PASS: addition works
+  FAIL: always fails — intentional failure
+  FAIL: wrong result — expected 5 but got 4
+
+Results: 1 passed, 2 failed, 3 total
+```
+
+Key decisions:
+- **Namespace `testing`** encapsulates the entire framework (§3.3).
+- **`try`/`catch`** in `run_all()` isolates each test — one failure doesn't abort others (§3.4).
+- **Structured bindings** in `print_report` make the loop readable (§3.5.3).
+- **`const&` parameters** avoid copying strings and vectors (§3.5).
+- **Returning `vector<TestResult>` by value** is efficient thanks to move semantics (§3.5.1).
+
+</details>

@@ -653,3 +653,255 @@ int main() {
 10. `getline` includes the delimiter in the returned string. (§10.2, p.96)
 
 <details><summary>Answer</summary>False. `getline` extracts and discards the delimiter.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### CSV Report Generator (§10.2–10.6, p.96–100)
+
+**Motivation:** You're building a reporting tool that reads student records from a CSV file, computes statistics, and generates a formatted report to both the console and a file. This exercises file I/O, string streams, formatting, and custom type I/O.
+
+**Signatures:**
+
+```cpp
+struct Student {
+    std::string name;
+    int age;
+    double gpa;
+
+    friend std::ostream& operator<<(std::ostream& os, const Student& s);
+    friend std::istream& operator>>(std::istream& is, Student& s);
+};
+
+class ReportGenerator {
+public:
+    void load_csv(const std::string& filename);
+    void load_from_string(const std::string& csv_data);  // for testing
+
+    struct Summary {
+        int count;
+        double avg_gpa;
+        double max_gpa;
+        std::string top_student;
+    };
+
+    Summary compute_summary() const;
+    void print_table(std::ostream& os) const;  // formatted table
+    void save_report(const std::string& filename) const;
+
+    int count() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Load CSV data with 5 students. `count()` returns 5. `compute_summary()` has correct avg/max GPA.
+2. `print_table(cout)` outputs a nicely aligned table with headers, separator, and rows.
+3. `save_report("report.txt")` writes the table + summary to a file. Verify the file exists and is readable.
+4. Malformed CSV lines (missing fields, non-numeric GPA) are skipped with a warning to `cerr`.
+
+**Constraints:**
+- Use `ifstream` and `ofstream` for file I/O with RAII
+- Use `istringstream` for parsing CSV lines
+- Use `<iomanip>` for formatted table output (`setw`, `left`, `right`, `fixed`, `setprecision`)
+- Overload `operator<<` and `operator>>` for `Student`
+- Check stream state after I/O operations
+- Use `cerr` for error reporting
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <vector>
+#include <string>
+#include <algorithm>
+
+struct Student {
+    std::string name;
+    int age;
+    double gpa;
+
+    // Output: "Name (age=XX, gpa=X.XX)"
+    friend std::ostream& operator<<(std::ostream& os, const Student& s) {
+        return os << s.name << " (age=" << s.age
+                  << ", gpa=" << std::fixed << std::setprecision(2) << s.gpa << ")";
+    }
+
+    // Input from CSV-style stream: "Name,Age,GPA"
+    friend std::istream& operator>>(std::istream& is, Student& s) {
+        std::string line;
+        if (!std::getline(is, line)) return is;
+
+        std::istringstream iss(line);
+        std::string age_str, gpa_str;
+
+        if (!std::getline(iss, s.name, ',') ||
+            !std::getline(iss, age_str, ',') ||
+            !std::getline(iss, gpa_str, ',')) {
+            is.setstate(std::ios::failbit);
+            return is;
+        }
+
+        try {
+            s.age = std::stoi(age_str);
+            s.gpa = std::stod(gpa_str);
+        } catch (...) {
+            is.setstate(std::ios::failbit);
+        }
+        return is;
+    }
+};
+
+class ReportGenerator {
+    std::vector<Student> students_;
+
+public:
+    // Load from file
+    void load_csv(const std::string& filename) {
+        std::ifstream file(filename);
+        if (!file) {
+            std::cerr << "Error: cannot open " << filename << '\n';
+            return;
+        }
+        std::string header;
+        std::getline(file, header);  // skip header line
+
+        std::string line;
+        int line_num = 1;
+        while (std::getline(file, line)) {
+            ++line_num;
+            std::istringstream iss(line);
+            Student s;
+            if (iss >> s) {
+                students_.push_back(std::move(s));
+            } else {
+                std::cerr << "Warning: skipping malformed line " << line_num << '\n';
+            }
+        }
+        // file closed by RAII destructor
+    }
+
+    // Load from string (for testing without files)
+    void load_from_string(const std::string& csv_data) {
+        std::istringstream iss(csv_data);
+        std::string header;
+        std::getline(iss, header);  // skip header
+
+        std::string line;
+        while (std::getline(iss, line)) {
+            std::istringstream line_stream(line);
+            Student s;
+            if (line_stream >> s) {
+                students_.push_back(std::move(s));
+            } else {
+                std::cerr << "Warning: skipping malformed line\n";
+            }
+        }
+    }
+
+    struct Summary {
+        int count;
+        double avg_gpa;
+        double max_gpa;
+        std::string top_student;
+    };
+
+    Summary compute_summary() const {
+        Summary sum{0, 0.0, 0.0, ""};
+        if (students_.empty()) return sum;
+
+        sum.count = static_cast<int>(students_.size());
+        double total_gpa = 0;
+        for (const auto& s : students_) {
+            total_gpa += s.gpa;
+            if (s.gpa > sum.max_gpa) {
+                sum.max_gpa = s.gpa;
+                sum.top_student = s.name;
+            }
+        }
+        sum.avg_gpa = total_gpa / sum.count;
+        return sum;
+    }
+
+    // Print formatted table
+    void print_table(std::ostream& os) const {
+        // Header
+        os << std::left << std::setw(20) << "Name"
+           << std::right << std::setw(5) << "Age"
+           << std::setw(8) << "GPA" << '\n';
+        os << std::string(33, '-') << '\n';
+
+        // Rows
+        for (const auto& s : students_) {
+            os << std::left  << std::setw(20) << s.name
+               << std::right << std::setw(5)  << s.age
+               << std::fixed << std::setprecision(2)
+               << std::setw(8) << s.gpa << '\n';
+        }
+    }
+
+    // Save full report to file
+    void save_report(const std::string& filename) const {
+        std::ofstream out(filename);
+        if (!out) {
+            std::cerr << "Error: cannot write to " << filename << '\n';
+            return;
+        }
+
+        out << "=== Student Report ===\n\n";
+        print_table(out);  // reuse same formatting logic
+
+        auto sum = compute_summary();
+        out << "\n--- Summary ---\n"
+            << "Students: " << sum.count << '\n'
+            << "Avg GPA:  " << std::fixed << std::setprecision(2) << sum.avg_gpa << '\n'
+            << "Top:      " << sum.top_student
+            << " (" << sum.max_gpa << ")\n";
+        // file closed by RAII
+    }
+
+    int count() const { return static_cast<int>(students_.size()); }
+};
+
+int main() {
+    ReportGenerator gen;
+
+    // Load from string (simulating file)
+    gen.load_from_string(
+        "Name,Age,GPA\n"
+        "Alice,22,3.85\n"
+        "Bob,20,3.42\n"
+        "Carol,21,3.91\n"
+        "Dave,23,3.15\n"
+        "Eve,22,3.78\n"
+    );
+
+    std::cout << "Loaded " << gen.count() << " students\n\n";
+
+    // Print table
+    gen.print_table(std::cout);
+
+    // Summary
+    auto sum = gen.compute_summary();
+    std::cout << "\nAvg GPA: " << std::fixed << std::setprecision(2) << sum.avg_gpa
+              << "  Top: " << sum.top_student << " (" << sum.max_gpa << ")\n";
+
+    // Save to file
+    gen.save_report("/tmp/report.txt");
+    std::cout << "\nReport saved to /tmp/report.txt\n";
+}
+```
+
+Key decisions:
+- **`operator>>` for Student** parses CSV with `getline(stream, field, ',')` — reusable and testable (§10.2).
+- **`print_table` takes `ostream&`** — works for both `cout` and file output without duplication (§10.2).
+- **`<iomanip>`** formatting: `setw` for column alignment (non-sticky), `fixed`+`setprecision` for GPA (sticky) (§10.4).
+- **RAII file handles**: both `ifstream` and `ofstream` close automatically on scope exit (§10.5).
+- **`cerr`** for errors: unbuffered, appears immediately, separate from normal output (§10.2).
+- **`istringstream`** for both CSV parsing and test input — same code path either way (§10.6).
+
+</details>

@@ -868,3 +868,223 @@ int main() {
 10. A destructor should be marked `noexcept` explicitly. (§5.1.1, p.49)
 
 <details><summary>Answer</summary>False (technically). Destructors are implicitly `noexcept` since C++11. You don't need to mark them explicitly.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Memory-Safe Dynamic Array (SmallVec) (§5.1.1–5.4, p.49–57)
+
+**Motivation:** You're building a `SmallVec<N>` — a vector-like container that stores up to `N` elements inline (on the stack) and spills to the heap only when the count exceeds `N`. This is a common optimization in game engines and compilers. It requires correct implementation of the complete Rule of Five.
+
+**Signatures:**
+
+```cpp
+class SmallVec {
+public:
+    explicit SmallVec(int capacity = 8);
+    ~SmallVec();
+    SmallVec(const SmallVec& other);
+    SmallVec& operator=(const SmallVec& other);
+    SmallVec(SmallVec&& other) noexcept;
+    SmallVec& operator=(SmallVec&& other) noexcept;
+
+    void push_back(double val);
+    double& operator[](int i);
+    const double& operator[](int i) const;
+    int size() const;
+    int capacity() const;
+    bool is_inline() const;  // true if using stack buffer
+
+    bool operator==(const SmallVec& other) const;
+    friend std::ostream& operator<<(std::ostream& os, const SmallVec& v);
+};
+```
+
+**Test Scenarios:**
+
+1. Create `SmallVec(4)`, push 3 values. `is_inline()` returns true. Copy it — both are independent.
+2. Push a 5th value — triggers heap allocation. `is_inline()` returns false.
+3. Move-construct from a heap-backed SmallVec. Source becomes empty, destination owns the data.
+4. `operator==` compares element-wise. `operator<<` prints `[1, 2, 3]`.
+
+**Constraints:**
+- Full Rule of Five — no double-free, no leaks, no UB
+- Move operations must be `noexcept`
+- After move, source must be in a valid destructible state
+- Deep copy in copy operations
+- `explicit` constructor
+- Use `operator==` and `operator<<` overloading
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <algorithm>
+#include <cstring>
+
+class SmallVec {
+    static constexpr int INLINE_CAP = 8;
+    double inline_buf_[INLINE_CAP];  // stack buffer
+    double* data_;                    // points to inline_buf_ or heap
+    int size_;
+    int cap_;
+
+    bool using_inline() const { return data_ == inline_buf_; }
+
+    void grow(int new_cap) {
+        double* new_data = new double[new_cap];
+        std::copy(data_, data_ + size_, new_data);
+        if (!using_inline()) delete[] data_;  // free old heap only
+        data_ = new_data;
+        cap_ = new_cap;
+    }
+
+public:
+    // Constructor: start with inline storage
+    explicit SmallVec(int capacity = INLINE_CAP)
+        : data_{inline_buf_}, size_{0}, cap_{INLINE_CAP} {
+        if (capacity > INLINE_CAP) {
+            data_ = new double[capacity];
+            cap_ = capacity;
+        }
+    }
+
+    // Destructor: free heap if not inline
+    ~SmallVec() {
+        if (!using_inline()) delete[] data_;
+    }
+
+    // Copy constructor: deep copy
+    SmallVec(const SmallVec& other)
+        : size_{other.size_}, cap_{other.cap_} {
+        if (other.using_inline()) {
+            data_ = inline_buf_;
+            cap_ = INLINE_CAP;
+        } else {
+            data_ = new double[cap_];
+        }
+        std::copy(other.data_, other.data_ + size_, data_);
+    }
+
+    // Copy assignment: deep copy with self-assignment check
+    SmallVec& operator=(const SmallVec& other) {
+        if (this != &other) {
+            if (!using_inline()) delete[] data_;
+
+            size_ = other.size_;
+            if (other.using_inline()) {
+                data_ = inline_buf_;
+                cap_ = INLINE_CAP;
+            } else {
+                cap_ = other.cap_;
+                data_ = new double[cap_];
+            }
+            std::copy(other.data_, other.data_ + size_, data_);
+        }
+        return *this;
+    }
+
+    // Move constructor: steal resources
+    SmallVec(SmallVec&& other) noexcept
+        : size_{other.size_}, cap_{other.cap_} {
+        if (other.using_inline()) {
+            // Can't steal the inline buffer — must copy
+            data_ = inline_buf_;
+            cap_ = INLINE_CAP;
+            std::copy(other.data_, other.data_ + size_, data_);
+        } else {
+            // Steal the heap pointer
+            data_ = other.data_;
+        }
+        // Leave source in valid empty state
+        other.data_ = other.inline_buf_;
+        other.size_ = 0;
+        other.cap_ = INLINE_CAP;
+    }
+
+    // Move assignment
+    SmallVec& operator=(SmallVec&& other) noexcept {
+        if (this != &other) {
+            if (!using_inline()) delete[] data_;
+
+            size_ = other.size_;
+            if (other.using_inline()) {
+                data_ = inline_buf_;
+                cap_ = INLINE_CAP;
+                std::copy(other.data_, other.data_ + size_, data_);
+            } else {
+                data_ = other.data_;
+                cap_ = other.cap_;
+            }
+            other.data_ = other.inline_buf_;
+            other.size_ = 0;
+            other.cap_ = INLINE_CAP;
+        }
+        return *this;
+    }
+
+    void push_back(double val) {
+        if (size_ >= cap_)
+            grow(cap_ * 2);  // double capacity
+        data_[size_++] = val;
+    }
+
+    double& operator[](int i) { return data_[i]; }
+    const double& operator[](int i) const { return data_[i]; }
+    int size() const { return size_; }
+    int capacity() const { return cap_; }
+    bool is_inline() const { return using_inline(); }
+
+    bool operator==(const SmallVec& other) const {
+        if (size_ != other.size_) return false;
+        for (int i = 0; i < size_; ++i)
+            if (data_[i] != other.data_[i]) return false;
+        return true;
+    }
+
+    friend std::ostream& operator<<(std::ostream& os, const SmallVec& v) {
+        os << "[";
+        for (int i = 0; i < v.size_; ++i) {
+            if (i > 0) os << ", ";
+            os << v.data_[i];
+        }
+        return os << "]";
+    }
+};
+
+int main() {
+    // Scenario 1: inline storage + copy
+    SmallVec a;
+    a.push_back(1); a.push_back(2); a.push_back(3);
+    std::cout << "a inline: " << a.is_inline() << '\n';  // 1
+    SmallVec b = a;  // deep copy
+    b.push_back(99);
+    std::cout << "a: " << a << '\n';  // [1, 2, 3]
+    std::cout << "b: " << b << '\n';  // [1, 2, 3, 99] — independent
+
+    // Scenario 2: spill to heap
+    for (int i = 0; i < 10; ++i) a.push_back(i);
+    std::cout << "a inline after growth: " << a.is_inline() << '\n';  // 0
+
+    // Scenario 3: move
+    SmallVec c = std::move(a);
+    std::cout << "c size: " << c.size() << '\n';   // 13
+    std::cout << "a size after move: " << a.size() << '\n';  // 0
+
+    // Scenario 4: equality
+    SmallVec d, e;
+    d.push_back(1); d.push_back(2);
+    e.push_back(1); e.push_back(2);
+    std::cout << "d == e: " << (d == e) << '\n';  // 1
+}
+```
+
+Key decisions:
+- **Inline buffer** avoids heap allocation for small sizes — the data pointer points to the stack array initially (§5.2, RAII).
+- **`using_inline()`** check prevents `delete[]` on stack memory — critical in destructor, copy, and move (§5.1.1).
+- **Move from inline** must copy, not steal, because the inline buffer is part of the source object's memory (§5.2.1).
+- **`noexcept` on moves** enables `std::vector<SmallVec>` to move rather than copy during reallocation (§5.2.1).
+- **`operator==` and `operator<<`** demonstrate conventional operations for user-defined types (§5.4, §5.5).
+
+</details>

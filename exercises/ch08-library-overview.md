@@ -636,3 +636,156 @@ int main() {
 10. Stroustrup recommends writing your own containers when the standard ones don't fit perfectly. (§8.1, p.79)
 
 <details><summary>Answer</summary>False. He recommends using and adapting standard facilities first, only writing custom ones when genuinely necessary.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Resource Pool Manager (§8.2–8.4, p.80–82)
+
+**Motivation:** You're building a connection pool for a database client. The pool pre-allocates a set of `Connection` objects and hands them out on request. When a connection is released, it goes back to the pool. The pool uses smart pointers with custom deleters to auto-return connections when they go out of scope.
+
+**Signatures:**
+
+```cpp
+struct Connection {
+    int id;
+    bool active;
+    Connection(int i) : id{i}, active{true} {}
+    void query(const std::string& sql) const;
+    void reset();
+};
+
+class ConnectionPool {
+public:
+    explicit ConnectionPool(int size);
+
+    // Acquires a connection; returns a unique_ptr with custom deleter
+    // that returns the connection to the pool instead of destroying it
+    using PooledConnection = std::unique_ptr<Connection, std::function<void(Connection*)>>;
+    PooledConnection acquire();
+
+    int available() const;
+    int total() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Create pool of 3 connections. `available()` is 3. `acquire()` reduces it to 2.
+2. When the `PooledConnection` goes out of scope, the connection is returned to the pool — `available()` goes back up.
+3. Acquiring when all connections are in use returns `nullptr` (or throws).
+
+**Constraints:**
+- Use `std::unique_ptr` with a custom deleter (not `shared_ptr`)
+- Use standard containers (`vector`, `queue`) from the standard library
+- Use `std::function` for the deleter
+- RAII: connections are auto-returned, never leaked
+- No raw `new`/`delete` in user code
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <memory>
+#include <vector>
+#include <queue>
+#include <string>
+#include <functional>
+#include <stdexcept>
+
+struct Connection {
+    int id;
+    bool active;
+
+    Connection(int i) : id{i}, active{true} {}
+
+    void query(const std::string& sql) const {
+        std::cout << "[conn " << id << "] " << sql << '\n';
+    }
+
+    // Reset state between uses
+    void reset() {
+        active = true;
+    }
+};
+
+class ConnectionPool {
+    // All connections owned by the pool
+    std::vector<std::unique_ptr<Connection>> all_;
+    // Available connections (raw pointers — pool owns the objects)
+    std::queue<Connection*> free_;
+
+public:
+    explicit ConnectionPool(int size) {
+        for (int i = 0; i < size; ++i) {
+            all_.push_back(std::make_unique<Connection>(i));
+            free_.push(all_.back().get());
+        }
+    }
+
+    // Custom deleter type: returns the connection to the pool
+    using PooledConnection = std::unique_ptr<Connection, std::function<void(Connection*)>>;
+
+    // Acquire: take a connection from the free queue
+    PooledConnection acquire() {
+        if (free_.empty())
+            throw std::runtime_error("no connections available");
+
+        Connection* conn = free_.front();
+        free_.pop();
+        conn->reset();
+
+        // Custom deleter captures `this` to return the connection
+        return PooledConnection(conn, [this](Connection* c) {
+            c->active = false;
+            free_.push(c);  // return to pool instead of deleting
+        });
+    }
+
+    int available() const { return static_cast<int>(free_.size()); }
+    int total() const { return static_cast<int>(all_.size()); }
+};
+
+int main() {
+    ConnectionPool pool(3);
+    std::cout << "Available: " << pool.available() << '\n';  // 3
+
+    {
+        // Scenario 1: acquire a connection
+        auto conn = pool.acquire();
+        conn->query("SELECT * FROM users");
+        std::cout << "Available after acquire: " << pool.available() << '\n';  // 2
+
+        // Scenario 2: acquire another
+        auto conn2 = pool.acquire();
+        conn2->query("INSERT INTO logs ...");
+        std::cout << "Available: " << pool.available() << '\n';  // 1
+
+    }  // conn and conn2 go out of scope — auto-returned to pool
+
+    // Scenario 2 continued: connections returned
+    std::cout << "Available after scope exit: " << pool.available() << '\n';  // 3
+
+    // Scenario 3: exhaust the pool
+    auto c1 = pool.acquire();
+    auto c2 = pool.acquire();
+    auto c3 = pool.acquire();
+    std::cout << "Available: " << pool.available() << '\n';  // 0
+
+    try {
+        auto c4 = pool.acquire();  // throws!
+    } catch (const std::runtime_error& e) {
+        std::cout << "Error: " << e.what() << '\n';
+    }
+}
+```
+
+Key decisions:
+- **`unique_ptr` with custom deleter** is the core pattern — the deleter returns the connection to the pool instead of deleting it (§8.4). This is RAII in action.
+- **`std::function<void(Connection*)>`** as the deleter type enables the lambda capture of `this` (§8.4).
+- **`vector<unique_ptr<Connection>>`** owns all connection objects — they live for the pool's lifetime (§8.3).
+- **`queue<Connection*>`** tracks available connections — raw pointers are safe here because the pool owns the objects (§8.3).
+- **RAII guarantee**: even if an exception occurs between acquire and release, the `PooledConnection`'s destructor returns it to the pool.
+
+</details>

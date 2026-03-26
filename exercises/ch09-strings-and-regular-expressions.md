@@ -662,3 +662,207 @@ int main() {
 10. `R"(...)"` is a raw string literal that disables escape processing. (§9.4, p.89)
 
 <details><summary>Answer</summary>True. Raw string literals let you write regex patterns without double-escaping backslashes.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Log File Analyzer (§9.2–9.4, p.85–92)
+
+**Motivation:** You're building a log analysis tool for a web server. Each log line has the format: `[2024-03-15 10:30:00] LEVEL: message`. The analyzer must parse each line using regex, filter by log level, extract statistics, and search for patterns in messages.
+
+**Signatures:**
+
+```cpp
+struct LogEntry {
+    std::string timestamp;
+    std::string level;     // "INFO", "WARN", "ERROR"
+    std::string message;
+};
+
+class LogAnalyzer {
+public:
+    void parse(const std::string& raw_log);  // parse multi-line log text
+
+    std::vector<LogEntry> filter_by_level(std::string_view level) const;
+    std::vector<LogEntry> search_message(const std::string& pattern) const;
+
+    struct Stats {
+        int total;
+        int info_count;
+        int warn_count;
+        int error_count;
+        std::string most_common_level;
+    };
+    Stats get_stats() const;
+
+    // Extract all unique IP addresses from messages (e.g., "from 192.168.1.1")
+    std::vector<std::string> extract_ips() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Parse a 5-line log. `get_stats()` correctly counts INFO, WARN, ERROR entries.
+2. `filter_by_level("ERROR")` returns only ERROR entries.
+3. `search_message("timeout")` finds entries containing "timeout" in the message.
+4. `extract_ips()` uses regex to find all IP addresses across all messages.
+
+**Constraints:**
+- Use `std::regex` for parsing log lines and extracting IPs
+- Use `std::string_view` for the level filter parameter
+- Use `std::string` operations (`find`, `substr`) where regex is overkill
+- Use `smatch` capture groups for structured extraction
+- Precompile regex patterns (store as members, not local variables)
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <string_view>
+#include <regex>
+#include <sstream>
+#include <set>
+
+struct LogEntry {
+    std::string timestamp;
+    std::string level;
+    std::string message;
+};
+
+class LogAnalyzer {
+    std::vector<LogEntry> entries_;
+
+    // Precompiled regex patterns — avoids recompilation on every call
+    static const std::regex& line_pattern() {
+        static std::regex r(R"(\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] (\w+): (.*))");
+        return r;
+    }
+
+    static const std::regex& ip_pattern() {
+        static std::regex r(R"(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})");
+        return r;
+    }
+
+public:
+    // Parse multi-line log text into structured entries
+    void parse(const std::string& raw_log) {
+        std::istringstream iss(raw_log);
+        std::string line;
+        while (std::getline(iss, line)) {
+            std::smatch m;
+            if (std::regex_match(line, m, line_pattern())) {
+                entries_.push_back({
+                    m[1].str(),  // timestamp (capture group 1)
+                    m[2].str(),  // level (capture group 2)
+                    m[3].str()   // message (capture group 3)
+                });
+            }
+        }
+    }
+
+    // Filter by level using string_view — no allocation for the parameter
+    std::vector<LogEntry> filter_by_level(std::string_view level) const {
+        std::vector<LogEntry> result;
+        for (const auto& e : entries_) {
+            if (e.level == level)
+                result.push_back(e);
+        }
+        return result;
+    }
+
+    // Search messages using regex
+    std::vector<LogEntry> search_message(const std::string& pattern) const {
+        std::regex re(pattern, std::regex::icase);
+        std::vector<LogEntry> result;
+        for (const auto& e : entries_) {
+            if (std::regex_search(e.message, re))
+                result.push_back(e);
+        }
+        return result;
+    }
+
+    struct Stats {
+        int total;
+        int info_count;
+        int warn_count;
+        int error_count;
+        std::string most_common_level;
+    };
+
+    Stats get_stats() const {
+        Stats s{static_cast<int>(entries_.size()), 0, 0, 0, ""};
+        for (const auto& e : entries_) {
+            if (e.level == "INFO")  ++s.info_count;
+            else if (e.level == "WARN")  ++s.warn_count;
+            else if (e.level == "ERROR") ++s.error_count;
+        }
+        // Determine most common level
+        int max_count = s.info_count;
+        s.most_common_level = "INFO";
+        if (s.warn_count > max_count) { max_count = s.warn_count; s.most_common_level = "WARN"; }
+        if (s.error_count > max_count) { s.most_common_level = "ERROR"; }
+        return s;
+    }
+
+    // Extract all unique IPs using regex iterator
+    std::vector<std::string> extract_ips() const {
+        std::set<std::string> unique_ips;
+        for (const auto& e : entries_) {
+            auto begin = std::sregex_iterator(e.message.begin(), e.message.end(), ip_pattern());
+            auto end = std::sregex_iterator();
+            for (auto it = begin; it != end; ++it) {
+                unique_ips.insert((*it)[0].str());
+            }
+        }
+        return {unique_ips.begin(), unique_ips.end()};
+    }
+};
+
+int main() {
+    LogAnalyzer analyzer;
+
+    std::string log = R"([2024-03-15 10:30:00] INFO: Server started on port 8080
+[2024-03-15 10:30:05] INFO: Connection from 192.168.1.10
+[2024-03-15 10:31:00] WARN: Slow query detected (timeout approaching)
+[2024-03-15 10:32:00] ERROR: Connection timeout from 10.0.0.5
+[2024-03-15 10:33:00] ERROR: Database connection lost from 192.168.1.10)";
+
+    analyzer.parse(log);
+
+    // Scenario 1: stats
+    auto stats = analyzer.get_stats();
+    std::cout << "Total: " << stats.total << " INFO: " << stats.info_count
+              << " WARN: " << stats.warn_count << " ERROR: " << stats.error_count
+              << " Most common: " << stats.most_common_level << '\n';
+
+    // Scenario 2: filter by level
+    auto errors = analyzer.filter_by_level("ERROR");
+    std::cout << "\nERRORS (" << errors.size() << "):\n";
+    for (const auto& e : errors)
+        std::cout << "  [" << e.timestamp << "] " << e.message << '\n';
+
+    // Scenario 3: search messages
+    auto timeouts = analyzer.search_message("timeout");
+    std::cout << "\nTimeout-related (" << timeouts.size() << "):\n";
+    for (const auto& e : timeouts)
+        std::cout << "  [" << e.level << "] " << e.message << '\n';
+
+    // Scenario 4: extract IPs
+    auto ips = analyzer.extract_ips();
+    std::cout << "\nUnique IPs:\n";
+    for (const auto& ip : ips)
+        std::cout << "  " << ip << '\n';
+}
+```
+
+Key decisions:
+- **Precompiled `static` regex** in accessor functions avoids recompilation cost (§9.4).
+- **`regex_match`** for structured line parsing (whole line must match), **`regex_search`** for substring search in messages (§9.4.2).
+- **`sregex_iterator`** walks all IP matches in a message — handles multiple IPs per line (§9.4.2).
+- **`string_view`** for the level filter avoids copying the filter string (§9.3).
+- **`set`** for IP deduplication, converted to vector for the return value.
+
+</details>

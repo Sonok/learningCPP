@@ -677,3 +677,211 @@ int main() {
 10. `map::find()` returns `end()` if the key is not found. (§11.4, p.107)
 
 <details><summary>Answer</summary>True. Compare the returned iterator against `map.end()` to check for absence.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Task Scheduler with Dependency Resolution (§11.2–11.5, p.103–109)
+
+**Motivation:** You're building a build system task scheduler. Each task has a name, a priority, and a list of dependencies (other task names that must complete first). The scheduler must produce a valid execution order (topological sort) and report if circular dependencies exist.
+
+**Signatures:**
+
+```cpp
+struct Task {
+    std::string name;
+    int priority;  // higher = more important
+    std::vector<std::string> dependencies;
+};
+
+class TaskScheduler {
+public:
+    void add_task(Task task);
+
+    // Returns tasks in valid execution order (dependencies before dependents)
+    // Within the same topological level, sort by priority descending
+    // Throws if circular dependency detected
+    std::vector<std::string> schedule() const;
+
+    // Returns all tasks that have no dependencies
+    std::vector<std::string> get_roots() const;
+
+    // Returns all tasks that depend on the given task
+    std::vector<std::string> get_dependents(const std::string& task_name) const;
+
+    int task_count() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Tasks: A(no deps), B(depends on A), C(depends on A), D(depends on B and C). `schedule()` returns `[A, C, B, D]` or `[A, B, C, D]` (any valid topo order).
+2. `get_roots()` returns `["A"]`. `get_dependents("A")` returns `["B", "C"]`.
+3. Adding a circular dependency (A->B, B->A) causes `schedule()` to throw.
+
+**Constraints:**
+- Use `std::map` or `std::unordered_map` for task lookup by name
+- Use `std::set` for visited/processed tracking
+- Use `std::vector` for the final schedule
+- Use `std::queue` or `std::stack` for the BFS/DFS traversal
+- Use container adaptors where appropriate
+- No raw pointers — use string keys for references between tasks
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <map>
+#include <set>
+#include <queue>
+#include <algorithm>
+#include <stdexcept>
+
+struct Task {
+    std::string name;
+    int priority;
+    std::vector<std::string> dependencies;
+};
+
+class TaskScheduler {
+    std::map<std::string, Task> tasks_;  // name -> task
+
+public:
+    void add_task(Task task) {
+        tasks_[task.name] = std::move(task);
+    }
+
+    // Topological sort using Kahn's algorithm (BFS)
+    std::vector<std::string> schedule() const {
+        // Build in-degree map and adjacency list
+        std::map<std::string, int> in_degree;
+        std::map<std::string, std::vector<std::string>> dependents;
+
+        // Initialize all tasks with zero in-degree
+        for (const auto& [name, task] : tasks_) {
+            if (in_degree.find(name) == in_degree.end())
+                in_degree[name] = 0;
+        }
+
+        // Count incoming edges
+        for (const auto& [name, task] : tasks_) {
+            for (const auto& dep : task.dependencies) {
+                ++in_degree[name];
+                dependents[dep].push_back(name);
+            }
+        }
+
+        // Priority queue: tasks with zero in-degree, ordered by priority descending
+        auto cmp = [this](const std::string& a, const std::string& b) {
+            return tasks_.at(a).priority < tasks_.at(b).priority;
+        };
+        std::priority_queue<std::string, std::vector<std::string>, decltype(cmp)> ready(cmp);
+
+        // Seed with all zero-in-degree tasks
+        for (const auto& [name, deg] : in_degree) {
+            if (deg == 0)
+                ready.push(name);
+        }
+
+        std::vector<std::string> result;
+
+        while (!ready.empty()) {
+            auto current = ready.top();
+            ready.pop();
+            result.push_back(current);
+
+            // Reduce in-degree of dependents
+            if (dependents.count(current)) {
+                for (const auto& dep : dependents.at(current)) {
+                    if (--in_degree[dep] == 0)
+                        ready.push(dep);
+                }
+            }
+        }
+
+        // If not all tasks are scheduled, there's a cycle
+        if (result.size() != tasks_.size())
+            throw std::runtime_error("circular dependency detected");
+
+        return result;
+    }
+
+    // Tasks with no dependencies
+    std::vector<std::string> get_roots() const {
+        std::vector<std::string> roots;
+        for (const auto& [name, task] : tasks_) {
+            if (task.dependencies.empty())
+                roots.push_back(name);
+        }
+        std::sort(roots.begin(), roots.end());
+        return roots;
+    }
+
+    // Tasks that depend on the given task
+    std::vector<std::string> get_dependents(const std::string& task_name) const {
+        std::vector<std::string> result;
+        for (const auto& [name, task] : tasks_) {
+            for (const auto& dep : task.dependencies) {
+                if (dep == task_name) {
+                    result.push_back(name);
+                    break;
+                }
+            }
+        }
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    int task_count() const { return static_cast<int>(tasks_.size()); }
+};
+
+int main() {
+    TaskScheduler sched;
+
+    // Scenario 1: valid DAG
+    sched.add_task({"compile",  3, {}});
+    sched.add_task({"link",     2, {"compile"}});
+    sched.add_task({"test",     1, {"link"}});
+    sched.add_task({"lint",     4, {}});
+    sched.add_task({"package",  0, {"test", "lint"}});
+
+    auto order = sched.schedule();
+    std::cout << "Build order: ";
+    for (const auto& name : order)
+        std::cout << name << " -> ";
+    std::cout << "done\n";
+
+    // Scenario 2: roots and dependents
+    auto roots = sched.get_roots();
+    std::cout << "Roots: ";
+    for (const auto& r : roots) std::cout << r << " ";
+    std::cout << '\n';
+
+    auto deps = sched.get_dependents("compile");
+    std::cout << "Depend on 'compile': ";
+    for (const auto& d : deps) std::cout << d << " ";
+    std::cout << '\n';
+
+    // Scenario 3: circular dependency
+    TaskScheduler bad;
+    bad.add_task({"A", 1, {"B"}});
+    bad.add_task({"B", 1, {"A"}});
+    try {
+        bad.schedule();
+    } catch (const std::runtime_error& e) {
+        std::cout << "Caught: " << e.what() << '\n';
+    }
+}
+```
+
+Key decisions:
+- **`std::map`** stores tasks by name for O(log n) lookup (§11.4).
+- **`std::priority_queue`** with custom comparator selects highest-priority ready task at each step (§11.5).
+- **Kahn's algorithm** (BFS-based topo sort) is used because it naturally detects cycles — if the result is shorter than the task count, a cycle exists.
+- **`std::vector`** for the result and dependency lists (§11.2).
+- **Cycle detection** via comparing output size vs input size — simpler than DFS-based back-edge detection.
+
+</details>

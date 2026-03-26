@@ -718,3 +718,172 @@ struct Widget {
 10. `std::totally_ordered` implies `std::equality_comparable`. (§7.2.4, p.75)
 
 <details><summary>Answer</summary>True. Total ordering requires `<`, `>`, `<=`, `>=`, and `==`, `!=`.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Concept-Constrained Generic Pipeline (§7.2–7.3, p.71–76)
+
+**Motivation:** You're building a data processing pipeline for a financial analytics system. Each stage transforms data, and stages can be chained. The pipeline must be type-safe: each stage's output type must match the next stage's input type. Use concepts to enforce this at compile time.
+
+**Signatures:**
+
+```cpp
+// Concept: a stage must be callable with an input and produce an output
+template<typename Stage, typename Input>
+concept PipelineStage = requires(Stage s, Input in) {
+    { s(in) } -> std::convertible_to<typename Stage::output_type>;
+};
+
+// A typed stage wrapping any callable
+template<typename F, typename In, typename Out>
+struct Stage {
+    using input_type = In;
+    using output_type = Out;
+    F func;
+    Out operator()(In input) const { return func(input); }
+};
+
+// Pipeline chains stages
+template<typename... Stages>
+class Pipeline {
+public:
+    Pipeline(Stages... stages);
+    auto process(auto input) const;
+};
+
+// Helper to create stages
+template<typename In, typename Out, typename F>
+auto make_stage(F f) -> Stage<F, In, Out>;
+```
+
+**Test Scenarios:**
+
+1. Pipeline: `string -> int (parse)`, `int -> double (scale by 1.5)`, `double -> string (format)`. Process `"42"` -> `"63.0"`.
+2. Attempting to chain `string -> int` then `double -> string` produces a compile error (type mismatch caught by concepts).
+3. Pipeline with a single stage works correctly.
+
+**Constraints:**
+- Use C++20 concepts to constrain stage compatibility
+- Use `requires` expressions to validate that stages chain correctly
+- Define at least one custom concept
+- Use variadic templates for the pipeline
+- Use `if constexpr` or fold expressions where appropriate
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <string>
+#include <sstream>
+#include <concepts>
+#include <tuple>
+
+// Concept: a callable that transforms In -> Out
+template<typename F, typename In>
+concept Transformer = requires(F f, In input) {
+    { f(input) };  // must be callable with In
+};
+
+// Stage wrapper: bundles a callable with its type information
+template<typename In, typename Out, typename F>
+struct Stage {
+    using input_type = In;
+    using output_type = Out;
+    F func;
+
+    explicit Stage(F f) : func{std::move(f)} {}
+    Out operator()(In input) const { return func(input); }
+};
+
+// Factory: creates a Stage with explicit In/Out types
+template<typename In, typename Out, typename F>
+auto make_stage(F f) {
+    return Stage<In, Out, F>{std::move(f)};
+}
+
+// Pipeline: chains an arbitrary number of stages
+template<typename... Stages>
+class Pipeline {
+    std::tuple<Stages...> stages_;
+
+    // Recursive process: apply stage 0, then pass result to remaining stages
+    template<std::size_t I, typename Input>
+    auto process_impl(Input&& input) const {
+        auto& stage = std::get<I>(stages_);
+        auto result = stage(std::forward<Input>(input));
+
+        if constexpr (I + 1 < sizeof...(Stages)) {
+            // More stages — chain the result forward
+            return process_impl<I + 1>(std::move(result));
+        } else {
+            // Last stage — return final result
+            return result;
+        }
+    }
+
+public:
+    explicit Pipeline(Stages... stages) : stages_{std::move(stages)...} {}
+
+    // Entry point: starts processing from stage 0
+    template<typename Input>
+    auto process(Input input) const {
+        return process_impl<0>(std::move(input));
+    }
+};
+
+// Deduction guide: allows Pipeline(stage1, stage2, ...) without explicit types
+template<typename... Stages>
+Pipeline(Stages...) -> Pipeline<Stages...>;
+
+int main() {
+    // Stage 1: string -> int (parse)
+    auto parse = make_stage<std::string, int>([](const std::string& s) {
+        return std::stoi(s);
+    });
+
+    // Stage 2: int -> double (scale)
+    auto scale = make_stage<int, double>([](int n) {
+        return n * 1.5;
+    });
+
+    // Stage 3: double -> string (format)
+    auto format = make_stage<double, std::string>([](double d) {
+        std::ostringstream oss;
+        oss << d;
+        return oss.str();
+    });
+
+    // Build pipeline: string -> int -> double -> string
+    Pipeline pipe(parse, scale, format);
+
+    // Scenario 1: process "42" through the pipeline
+    auto result = pipe.process(std::string("42"));
+    std::cout << "Result: " << result << '\n';  // "63"
+
+    // Scenario 2: single-stage pipeline
+    Pipeline single(parse);
+    std::cout << "Single: " << single.process(std::string("99")) << '\n';  // 99
+
+    // Scenario 3: type mismatch would be caught at compile time
+    // If you tried Pipeline(parse, format) — parse outputs int,
+    // format expects double — you'd get a compile error in process_impl
+    // when trying to call format(int).
+
+    // Another pipeline: int -> int -> int
+    auto doubler = make_stage<int, int>([](int n) { return n * 2; });
+    auto adder = make_stage<int, int>([](int n) { return n + 10; });
+    Pipeline math(doubler, adder);
+    std::cout << "Math: " << math.process(5) << '\n';  // (5*2)+10 = 20
+}
+```
+
+Key decisions:
+- **`Transformer` concept** constrains callables to those accepting the correct input type (§7.2).
+- **`if constexpr`** in `process_impl` enables compile-time recursion through the tuple of stages (§7.2, using concepts chapter's if-constexpr pattern).
+- **Type mismatch** between stages produces a compile error at the stage call site — e.g., passing an `int` to a stage expecting `double` fails clearly.
+- **Variadic templates + `std::tuple`** store the heterogeneous stage types (§6.2.4 + §7.2).
+- **CTAD deduction guide** lets you write `Pipeline(s1, s2, s3)` without specifying all template parameters.
+
+</details>

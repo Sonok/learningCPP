@@ -699,3 +699,227 @@ int main() {
 10. `std::visit` requires the visitor to handle all alternatives of the variant. (§13.4.2, p.127)
 
 <details><summary>Answer</summary>True. The visitor must be callable for every type in the variant; otherwise it's a compile error.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### JSON-Like Document Model (§13.2–13.5, p.121–129)
+
+**Motivation:** You're building a lightweight document model (like JSON) where a `Value` can be null, boolean, integer, double, string, an array of values, or an object (map of string to value). This exercises `variant`, `optional`, `shared_ptr` (for recursive types), and `visit`.
+
+**Signatures:**
+
+```cpp
+class Value {
+public:
+    using Null = std::monostate;
+    using Array = std::vector<Value>;
+    using Object = std::map<std::string, Value>;
+    using Storage = std::variant<Null, bool, int, double, std::string,
+                                  std::shared_ptr<Array>, std::shared_ptr<Object>>;
+
+    Value();                          // null
+    Value(bool b);
+    Value(int i);
+    Value(double d);
+    Value(const std::string& s);
+    Value(const char* s);
+
+    // Array operations
+    static Value array(std::initializer_list<Value> items);
+    void push_back(Value v);
+    const Value& operator[](int index) const;
+
+    // Object operations
+    static Value object(std::initializer_list<std::pair<std::string, Value>> items);
+    void set(const std::string& key, Value v);
+    std::optional<Value> get(const std::string& key) const;
+
+    // Type queries
+    bool is_null() const;
+    bool is_number() const;
+    bool is_string() const;
+    bool is_array() const;
+    bool is_object() const;
+
+    // Convert to string (JSON-like)
+    std::string to_string() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Create nested structure: `{"name": "Alice", "age": 30, "scores": [95, 87, 92]}`. `to_string()` outputs valid JSON-like text.
+2. `value.get("name")` returns `optional<Value>` with `"Alice"`. `value.get("missing")` returns `nullopt`.
+3. Null values, booleans, nested objects all serialize correctly.
+
+**Constraints:**
+- Use `std::variant` with `std::monostate` for null
+- Use `std::shared_ptr` for Array and Object to handle the recursive type
+- Use `std::visit` for `to_string()` and type queries
+- Use `std::optional` for safe key lookup
+- Use `std::function` or lambdas with `visit`
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <variant>
+#include <vector>
+#include <map>
+#include <string>
+#include <memory>
+#include <optional>
+#include <sstream>
+
+class Value {
+public:
+    using Null = std::monostate;
+    using Array = std::vector<Value>;
+    using Object = std::map<std::string, Value>;
+    // shared_ptr enables recursive type (Value contains vector<Value>)
+    using Storage = std::variant<Null, bool, int, double, std::string,
+                                  std::shared_ptr<Array>, std::shared_ptr<Object>>;
+private:
+    Storage data_;
+
+public:
+    Value() : data_{Null{}} {}
+    Value(bool b) : data_{b} {}
+    Value(int i) : data_{i} {}
+    Value(double d) : data_{d} {}
+    Value(const std::string& s) : data_{s} {}
+    Value(const char* s) : data_{std::string(s)} {}
+
+    // Factory for arrays
+    static Value array(std::initializer_list<Value> items) {
+        Value v;
+        v.data_ = std::make_shared<Array>(items);
+        return v;
+    }
+
+    void push_back(Value v) {
+        if (auto* arr = std::get_if<std::shared_ptr<Array>>(&data_))
+            (*arr)->push_back(std::move(v));
+    }
+
+    const Value& operator[](int index) const {
+        return (*std::get<std::shared_ptr<Array>>(data_))[index];
+    }
+
+    // Factory for objects
+    static Value object(std::initializer_list<std::pair<std::string, Value>> items) {
+        Value v;
+        auto obj = std::make_shared<Object>();
+        for (auto& [key, val] : items)
+            (*obj)[key] = val;
+        v.data_ = obj;
+        return v;
+    }
+
+    void set(const std::string& key, Value v) {
+        if (auto* obj = std::get_if<std::shared_ptr<Object>>(&data_))
+            (**obj)[key] = std::move(v);
+    }
+
+    // Safe lookup: returns nullopt if key missing or not an object
+    std::optional<Value> get(const std::string& key) const {
+        if (auto* obj = std::get_if<std::shared_ptr<Object>>(&data_)) {
+            auto it = (*obj)->find(key);
+            if (it != (*obj)->end())
+                return it->second;
+        }
+        return std::nullopt;
+    }
+
+    // Type queries using visit
+    bool is_null() const   { return std::holds_alternative<Null>(data_); }
+    bool is_number() const { return std::holds_alternative<int>(data_) ||
+                                    std::holds_alternative<double>(data_); }
+    bool is_string() const { return std::holds_alternative<std::string>(data_); }
+    bool is_array() const  { return std::holds_alternative<std::shared_ptr<Array>>(data_); }
+    bool is_object() const { return std::holds_alternative<std::shared_ptr<Object>>(data_); }
+
+    // Serialize to JSON-like string using std::visit
+    std::string to_string() const {
+        return std::visit([](const auto& val) -> std::string {
+            using T = std::decay_t<decltype(val)>;
+
+            if constexpr (std::is_same_v<T, Null>)
+                return "null";
+            else if constexpr (std::is_same_v<T, bool>)
+                return val ? "true" : "false";
+            else if constexpr (std::is_same_v<T, int>)
+                return std::to_string(val);
+            else if constexpr (std::is_same_v<T, double>) {
+                std::ostringstream oss;
+                oss << val;
+                return oss.str();
+            }
+            else if constexpr (std::is_same_v<T, std::string>)
+                return "\"" + val + "\"";
+            else if constexpr (std::is_same_v<T, std::shared_ptr<Array>>) {
+                std::string s = "[";
+                for (size_t i = 0; i < val->size(); ++i) {
+                    if (i > 0) s += ", ";
+                    s += (*val)[i].to_string();
+                }
+                return s + "]";
+            }
+            else if constexpr (std::is_same_v<T, std::shared_ptr<Object>>) {
+                std::string s = "{";
+                bool first = true;
+                for (const auto& [k, v] : *val) {
+                    if (!first) s += ", ";
+                    s += "\"" + k + "\": " + v.to_string();
+                    first = false;
+                }
+                return s + "}";
+            }
+        }, data_);
+    }
+};
+
+int main() {
+    // Scenario 1: build a nested document
+    auto doc = Value::object({
+        {"name", Value("Alice")},
+        {"age", Value(30)},
+        {"active", Value(true)},
+        {"scores", Value::array({Value(95), Value(87), Value(92)})},
+        {"address", Value::object({
+            {"city", Value("Portland")},
+            {"zip", Value(97201)}
+        })}
+    });
+
+    std::cout << doc.to_string() << "\n\n";
+
+    // Scenario 2: safe lookup
+    if (auto name = doc.get("name"))
+        std::cout << "Name: " << name->to_string() << '\n';
+
+    if (auto missing = doc.get("phone"))
+        std::cout << "Found phone\n";
+    else
+        std::cout << "Phone: not found\n";
+
+    // Scenario 3: type checks
+    auto scores = doc.get("scores");
+    std::cout << "scores is array: " << std::boolalpha << scores->is_array() << '\n';
+
+    // Scenario 4: null value
+    Value null_val;
+    std::cout << "null: " << null_val.to_string() << '\n';
+}
+```
+
+Key decisions:
+- **`std::variant`** with `std::monostate` for null — type-safe union of all JSON types (§13.4.2).
+- **`std::shared_ptr<Array>`/`shared_ptr<Object>`** solves the recursive type problem — `Value` can't directly contain `vector<Value>` in a variant (incomplete type) (§13.2.1).
+- **`std::visit`** with generic lambda + `if constexpr` dispatches serialization per-type (§13.4.2).
+- **`std::optional`** for `.get()` — absent keys return `nullopt` instead of throwing (§13.4.1).
+- **`std::holds_alternative`** for type queries — cleaner than `get_if` when you only need a bool (§13.4.2).
+
+</details>

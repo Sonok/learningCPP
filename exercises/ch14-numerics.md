@@ -639,3 +639,210 @@ static std::mt19937 gen(std::random_device{}());
 10. `std::reduce` (C++17) differs from `accumulate` in that it allows out-of-order evaluation. (§14.3, p.135)
 
 <details><summary>Answer</summary>True. `reduce` doesn't guarantee left-to-right evaluation, enabling parallelism.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Monte Carlo Option Pricer (§14.2–14.5, p.133–138)
+
+**Motivation:** You're building a financial tool that prices European call options using Monte Carlo simulation. This requires generating millions of random stock price paths using geometric Brownian motion, computing the payoff of each path, and averaging the discounted payoffs.
+
+**Signatures:**
+
+```cpp
+struct OptionParams {
+    double spot;         // current stock price
+    double strike;       // option strike price
+    double rate;         // risk-free interest rate (annual)
+    double volatility;   // annual volatility (sigma)
+    double time_years;   // time to expiration in years
+};
+
+struct PricingResult {
+    double price;        // estimated option price
+    double std_error;    // standard error of the estimate
+    int num_paths;
+};
+
+class MonteCarloPricer {
+public:
+    explicit MonteCarloPricer(unsigned seed = 42);
+
+    // Price a European call option
+    PricingResult price_call(const OptionParams& params, int num_paths) const;
+
+    // Price a European put option
+    PricingResult price_put(const OptionParams& params, int num_paths) const;
+
+    // Generate a single price path (for visualization/debugging)
+    std::vector<double> generate_path(const OptionParams& params, int steps) const;
+};
+```
+
+**Test Scenarios:**
+
+1. Price a call option: spot=100, strike=100, rate=5%, vol=20%, T=1yr, 100k paths. Result should be near Black-Scholes analytical value (~10.45).
+2. Put-call parity: `call - put ≈ spot - strike * exp(-rT)`. Verify this holds within standard error.
+3. Increasing volatility increases both call and put prices.
+
+**Constraints:**
+- Use `<random>` with `mt19937` and `normal_distribution`
+- Use `<cmath>` for `exp`, `sqrt`, `log`
+- Use `std::accumulate` for averaging payoffs
+- Use `<numeric>` for computing standard deviation
+- Use `numeric_limits` for any precision checks
+- No `rand()`/`srand()`
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <random>
+#include <cmath>
+#include <numeric>
+#include <iomanip>
+
+struct OptionParams {
+    double spot;
+    double strike;
+    double rate;
+    double volatility;
+    double time_years;
+};
+
+struct PricingResult {
+    double price;
+    double std_error;
+    int num_paths;
+};
+
+class MonteCarloPricer {
+    mutable std::mt19937 gen_;  // mutable: const methods need to draw random numbers
+
+public:
+    explicit MonteCarloPricer(unsigned seed = 42) : gen_{seed} {}
+
+    // Simulate terminal stock price using geometric Brownian motion:
+    // S_T = S_0 * exp((r - 0.5*sigma^2)*T + sigma*sqrt(T)*Z)
+    // where Z ~ N(0,1)
+    double simulate_terminal_price(const OptionParams& p) const {
+        std::normal_distribution<double> norm(0.0, 1.0);
+        double z = norm(gen_);
+        double drift = (p.rate - 0.5 * p.volatility * p.volatility) * p.time_years;
+        double diffusion = p.volatility * std::sqrt(p.time_years) * z;
+        return p.spot * std::exp(drift + diffusion);
+    }
+
+    PricingResult price_call(const OptionParams& params, int num_paths) const {
+        std::vector<double> payoffs(num_paths);
+
+        // Generate payoffs: max(S_T - K, 0)
+        for (int i = 0; i < num_paths; ++i) {
+            double s_t = simulate_terminal_price(params);
+            payoffs[i] = std::max(s_t - params.strike, 0.0);
+        }
+
+        // Discount factor: e^(-rT)
+        double discount = std::exp(-params.rate * params.time_years);
+
+        // Mean payoff using accumulate
+        double mean = std::accumulate(payoffs.begin(), payoffs.end(), 0.0) / num_paths;
+
+        // Standard deviation for confidence interval
+        double variance = std::accumulate(payoffs.begin(), payoffs.end(), 0.0,
+            [mean](double acc, double x) {
+                return acc + (x - mean) * (x - mean);
+            }) / (num_paths - 1);
+
+        double std_dev = std::sqrt(variance);
+        double std_error = discount * std_dev / std::sqrt(static_cast<double>(num_paths));
+
+        return {discount * mean, std_error, num_paths};
+    }
+
+    PricingResult price_put(const OptionParams& params, int num_paths) const {
+        std::vector<double> payoffs(num_paths);
+
+        for (int i = 0; i < num_paths; ++i) {
+            double s_t = simulate_terminal_price(params);
+            payoffs[i] = std::max(params.strike - s_t, 0.0);  // put payoff
+        }
+
+        double discount = std::exp(-params.rate * params.time_years);
+        double mean = std::accumulate(payoffs.begin(), payoffs.end(), 0.0) / num_paths;
+
+        double variance = std::accumulate(payoffs.begin(), payoffs.end(), 0.0,
+            [mean](double acc, double x) {
+                return acc + (x - mean) * (x - mean);
+            }) / (num_paths - 1);
+
+        double std_error = discount * std::sqrt(variance) / std::sqrt(static_cast<double>(num_paths));
+        return {discount * mean, std_error, num_paths};
+    }
+
+    // Generate a multi-step price path for visualization
+    std::vector<double> generate_path(const OptionParams& params, int steps) const {
+        std::normal_distribution<double> norm(0.0, 1.0);
+        double dt = params.time_years / steps;
+        double drift = (params.rate - 0.5 * params.volatility * params.volatility) * dt;
+        double vol_sqrt_dt = params.volatility * std::sqrt(dt);
+
+        std::vector<double> path(steps + 1);
+        path[0] = params.spot;
+        for (int i = 1; i <= steps; ++i) {
+            double z = norm(gen_);
+            path[i] = path[i-1] * std::exp(drift + vol_sqrt_dt * z);
+        }
+        return path;
+    }
+};
+
+int main() {
+    MonteCarloPricer pricer(42);
+
+    OptionParams params{100.0, 100.0, 0.05, 0.20, 1.0};
+    int paths = 100000;
+
+    // Scenario 1: price a call
+    auto call = pricer.price_call(params, paths);
+    std::cout << std::fixed << std::setprecision(4);
+    std::cout << "Call price: $" << call.price
+              << " (SE: " << call.std_error << ")\n";
+    // Should be near Black-Scholes ~$10.45
+
+    // Scenario 2: price a put and verify put-call parity
+    auto put = pricer.price_put(params, paths);
+    std::cout << "Put price:  $" << put.price
+              << " (SE: " << put.std_error << ")\n";
+
+    double parity_lhs = call.price - put.price;
+    double parity_rhs = params.spot - params.strike * std::exp(-params.rate * params.time_years);
+    std::cout << "Put-call parity check: "
+              << parity_lhs << " ≈ " << parity_rhs << '\n';
+
+    // Scenario 3: higher volatility increases prices
+    OptionParams high_vol = params;
+    high_vol.volatility = 0.40;
+    auto call_hv = pricer.price_call(high_vol, paths);
+    std::cout << "\nHigh-vol call: $" << call_hv.price
+              << " (vs base: $" << call.price << ")\n";
+
+    // Bonus: visualize a path
+    auto path = pricer.generate_path(params, 12);
+    std::cout << "\nSample 12-month path: ";
+    for (auto p : path) std::cout << std::setprecision(1) << p << " ";
+    std::cout << '\n';
+}
+```
+
+Key decisions:
+- **`mt19937`** for high-quality random generation with reproducible seed (§14.5).
+- **`normal_distribution`** for the Z ~ N(0,1) random variable in GBM (§14.5).
+- **`std::accumulate`** for computing mean and variance — no manual loops for aggregation (§14.3).
+- **`std::exp`, `std::sqrt`, `std::log`** from `<cmath>` for the GBM formula (§14.2).
+- **`mutable` on the engine** — const methods need to generate random numbers without modifying logical state.
+- **Standard error** = discounted σ / √n — quantifies estimate reliability.
+
+</details>

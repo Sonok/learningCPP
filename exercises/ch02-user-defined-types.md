@@ -704,3 +704,201 @@ int main() {
 10. A `struct` cannot have private members. (§2.2, p.15)
 
 <details><summary>Answer</summary>False. A `struct` can use `private:` just like a `class`; only the default differs.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### INI-Style Configuration Store (§2.2–2.5, p.15–22)
+
+**Motivation:** You're building a configuration system that stores typed settings. Each setting has a name, a type (string, integer, or boolean), and a value. The store supports adding settings, querying by name, and printing all settings grouped by type.
+
+**Signatures:**
+
+```cpp
+enum class ValueType { String, Int, Bool };
+
+struct ConfigValue {
+    ValueType type;
+    union {
+        int int_val;
+        bool bool_val;
+    };
+    char str_val[64];  // used when type == String
+
+    // Constructors for each type
+    static ConfigValue make_string(const char* s);
+    static ConfigValue make_int(int v);
+    static ConfigValue make_bool(bool v);
+
+    void print() const;
+};
+
+class ConfigStore {
+public:
+    void set(const char* name, ConfigValue val);
+    const ConfigValue* get(const char* name) const;
+    void print_all() const;
+    int size() const;
+private:
+    struct Entry { char name[32]; ConfigValue value; };
+    Entry entries_[100];
+    int count_ = 0;
+};
+```
+
+**Test Scenarios:**
+
+1. Set `"app_name"` to string `"MyApp"`, `"port"` to int `8080`, `"debug"` to bool `true`. `size()` returns 3.
+2. `get("port")` returns a `ConfigValue` with `type == Int` and `int_val == 8080`.
+3. `get("missing")` returns `nullptr`.
+4. `print_all()` outputs all settings with their types.
+
+**Constraints:**
+- Use `struct`, `enum class`, `union` — all three user-defined type mechanisms from this chapter
+- No `std::string`, `std::vector`, or `std::map` — use C-style arrays and `<cstring>`
+- The `class` must enforce invariants (private data, public interface)
+- Use the `class` vs `struct` distinction meaningfully
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <cstring>
+
+enum class ValueType { String, Int, Bool };
+
+struct ConfigValue {
+    ValueType type;
+    union {
+        int int_val;
+        bool bool_val;
+    };
+    char str_val[64];  // only valid when type == String
+
+    // Factory functions establish the correct tag + value pairing
+    static ConfigValue make_string(const char* s) {
+        ConfigValue v;
+        v.type = ValueType::String;
+        std::strncpy(v.str_val, s, sizeof(v.str_val) - 1);
+        v.str_val[sizeof(v.str_val) - 1] = '\0';
+        return v;
+    }
+
+    static ConfigValue make_int(int val) {
+        ConfigValue v;
+        v.type = ValueType::Int;
+        v.int_val = val;
+        return v;
+    }
+
+    static ConfigValue make_bool(bool val) {
+        ConfigValue v;
+        v.type = ValueType::Bool;
+        v.bool_val = val;
+        return v;
+    }
+
+    // Print based on active type — switch on enum class
+    void print() const {
+        switch (type) {
+            case ValueType::String:
+                std::cout << "(string) \"" << str_val << "\"";
+                break;
+            case ValueType::Int:
+                std::cout << "(int) " << int_val;
+                break;
+            case ValueType::Bool:
+                std::cout << "(bool) " << (bool_val ? "true" : "false");
+                break;
+        }
+    }
+};
+
+class ConfigStore {
+    // Entry pairs a name with a value — struct for simple grouping
+    struct Entry {
+        char name[32];
+        ConfigValue value;
+    };
+
+    Entry entries_[100];  // fixed capacity — no dynamic allocation
+    int count_ = 0;
+
+    // Internal helper: find index by name, or -1
+    int find_index(const char* name) const {
+        for (int i = 0; i < count_; ++i) {
+            if (std::strcmp(entries_[i].name, name) == 0)
+                return i;
+        }
+        return -1;
+    }
+
+public:
+    // Set: update if exists, append if new
+    void set(const char* name, ConfigValue val) {
+        int idx = find_index(name);
+        if (idx >= 0) {
+            entries_[idx].value = val;  // update existing
+        } else if (count_ < 100) {
+            std::strncpy(entries_[count_].name, name, 31);
+            entries_[count_].name[31] = '\0';
+            entries_[count_].value = val;
+            ++count_;
+        }
+    }
+
+    // Get: return pointer to value, or nullptr if not found
+    const ConfigValue* get(const char* name) const {
+        int idx = find_index(name);
+        if (idx >= 0)
+            return &entries_[idx].value;
+        return nullptr;
+    }
+
+    // Print all entries
+    void print_all() const {
+        for (int i = 0; i < count_; ++i) {
+            std::cout << "  " << entries_[i].name << " = ";
+            entries_[i].value.print();
+            std::cout << '\n';
+        }
+    }
+
+    int size() const { return count_; }
+};
+
+int main() {
+    ConfigStore cfg;
+
+    // Scenario 1: add three settings of different types
+    cfg.set("app_name", ConfigValue::make_string("MyApp"));
+    cfg.set("port",     ConfigValue::make_int(8080));
+    cfg.set("debug",    ConfigValue::make_bool(true));
+    std::cout << "Size: " << cfg.size() << '\n';  // 3
+
+    // Scenario 2: query by name
+    if (const auto* v = cfg.get("port")) {
+        std::cout << "port = ";
+        v->print();  // (int) 8080
+        std::cout << '\n';
+    }
+
+    // Scenario 3: missing key
+    if (cfg.get("missing") == nullptr)
+        std::cout << "\"missing\" not found\n";
+
+    // Scenario 4: print all
+    std::cout << "All settings:\n";
+    cfg.print_all();
+}
+```
+
+Key decisions:
+- **`enum class ValueType`** is the discriminator tag — scoped to avoid name clashes (§2.5).
+- **`union`** stores either `int_val` or `bool_val` in the same memory (§2.4). `str_val` is separate since it's an array.
+- **Factory functions** (`make_string`, `make_int`, `make_bool`) establish the tag+value invariant — the caller can't set a mismatched type/value.
+- **`class ConfigStore`** uses `private` data and a `public` interface, enforcing the invariant that `count_` matches actual entries (§2.3).
+- **`struct Entry`** is a simple data grouping — no invariant to enforce, so `struct` is appropriate (§2.2).
+
+</details>

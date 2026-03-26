@@ -660,3 +660,205 @@ int main() {
 10. A lambda with no capture clause `[]` can be converted to a function pointer. (§12.5, p.118)
 
 <details><summary>Answer</summary>True. Captureless lambdas are convertible to function pointers of the matching signature.</details>
+
+---
+
+## 8. Capstone Implementation Challenge
+
+### Data Pipeline Processor (§12.2–12.6, p.112–119)
+
+**Motivation:** You're building an analytics pipeline that processes a dataset of sales records. The pipeline filters, transforms, sorts, and aggregates data using only standard algorithms — no manual loops.
+
+**Signatures:**
+
+```cpp
+struct Sale {
+    std::string product;
+    std::string region;
+    double amount;
+    int quantity;
+    std::string date;  // "YYYY-MM-DD"
+};
+
+class SalesPipeline {
+    std::vector<Sale> data_;
+public:
+    void load(std::vector<Sale> sales);
+
+    // Filter: keep only sales in given region
+    std::vector<Sale> by_region(const std::string& region) const;
+
+    // Transform: apply a discount to all sales, return new vector
+    std::vector<Sale> apply_discount(double pct) const;
+
+    // Top N products by total revenue
+    std::vector<std::pair<std::string, double>> top_products(int n) const;
+
+    // Statistics using accumulate
+    double total_revenue() const;
+    double average_sale() const;
+
+    // Partition: split into high-value (>threshold) and low-value
+    std::pair<std::vector<Sale>, std::vector<Sale>>
+    partition_by_value(double threshold) const;
+
+    // Check if all sales are positive
+    bool all_positive() const;
+};
+```
+
+**Test Scenarios:**
+
+1. Load 10 sales across 3 regions. `by_region("West")` returns only West sales. `total_revenue()` sums all amounts.
+2. `top_products(3)` returns the 3 products with highest total revenue across all sales.
+3. `partition_by_value(100)` splits into two vectors. `all_positive()` returns true.
+4. `apply_discount(0.10)` reduces all amounts by 10%.
+
+**Constraints:**
+- Use ONLY standard algorithms: `std::for_each`, `std::transform`, `std::copy_if`, `std::sort`, `std::partial_sort`, `std::accumulate`, `std::partition_copy`, `std::all_of`
+- **No manual for/while loops** in any member function
+- Use lambdas for all predicates and transformers
+- Use `std::back_inserter` for output iterators
+
+<details><summary>Solution</summary>
+
+```cpp
+#include <iostream>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <numeric>
+#include <map>
+
+struct Sale {
+    std::string product;
+    std::string region;
+    double amount;
+    int quantity;
+    std::string date;
+};
+
+class SalesPipeline {
+    std::vector<Sale> data_;
+public:
+    void load(std::vector<Sale> sales) {
+        data_ = std::move(sales);
+    }
+
+    // Filter by region — copy_if with back_inserter
+    std::vector<Sale> by_region(const std::string& region) const {
+        std::vector<Sale> result;
+        std::copy_if(data_.begin(), data_.end(), std::back_inserter(result),
+            [&region](const Sale& s) { return s.region == region; });
+        return result;
+    }
+
+    // Transform: create new vector with discounted amounts
+    std::vector<Sale> apply_discount(double pct) const {
+        std::vector<Sale> result(data_.size());
+        std::transform(data_.begin(), data_.end(), result.begin(),
+            [pct](Sale s) {  // copy, then modify
+                s.amount *= (1.0 - pct);
+                return s;
+            });
+        return result;
+    }
+
+    // Aggregate revenue by product, then find top N
+    std::vector<std::pair<std::string, double>> top_products(int n) const {
+        // Step 1: accumulate revenue per product using for_each
+        std::map<std::string, double> revenue;
+        std::for_each(data_.begin(), data_.end(),
+            [&revenue](const Sale& s) { revenue[s.product] += s.amount; });
+
+        // Step 2: move to vector for sorting
+        std::vector<std::pair<std::string, double>> products(revenue.begin(), revenue.end());
+
+        // Step 3: partial_sort for top N
+        int limit = std::min(n, static_cast<int>(products.size()));
+        std::partial_sort(products.begin(), products.begin() + limit, products.end(),
+            [](const auto& a, const auto& b) { return a.second > b.second; });
+
+        products.resize(limit);
+        return products;
+    }
+
+    // Total revenue using accumulate
+    double total_revenue() const {
+        return std::accumulate(data_.begin(), data_.end(), 0.0,
+            [](double sum, const Sale& s) { return sum + s.amount; });
+    }
+
+    // Average sale using accumulate + size
+    double average_sale() const {
+        if (data_.empty()) return 0.0;
+        return total_revenue() / static_cast<double>(data_.size());
+    }
+
+    // Partition into high and low value sales
+    std::pair<std::vector<Sale>, std::vector<Sale>>
+    partition_by_value(double threshold) const {
+        std::vector<Sale> high, low;
+        std::partition_copy(data_.begin(), data_.end(),
+            std::back_inserter(high), std::back_inserter(low),
+            [threshold](const Sale& s) { return s.amount > threshold; });
+        return {high, low};
+    }
+
+    // Check if all amounts are positive
+    bool all_positive() const {
+        return std::all_of(data_.begin(), data_.end(),
+            [](const Sale& s) { return s.amount > 0; });
+    }
+};
+
+int main() {
+    SalesPipeline pipe;
+    pipe.load({
+        {"Widget",  "West",  150.0, 3, "2024-01-15"},
+        {"Gadget",  "East",   75.0, 5, "2024-01-16"},
+        {"Widget",  "West",  200.0, 2, "2024-01-17"},
+        {"Doohick", "North",  50.0, 10,"2024-01-18"},
+        {"Gadget",  "West",  125.0, 1, "2024-01-19"},
+        {"Widget",  "East",  180.0, 4, "2024-01-20"},
+        {"Doohick", "West",   60.0, 8, "2024-01-21"},
+        {"Thingam", "North", 300.0, 1, "2024-01-22"},
+        {"Gadget",  "East",   90.0, 6, "2024-01-23"},
+        {"Thingam", "West",  250.0, 2, "2024-01-24"},
+    });
+
+    // Total and average
+    std::cout << "Total revenue: $" << pipe.total_revenue() << '\n';
+    std::cout << "Avg sale: $" << pipe.average_sale() << '\n';
+    std::cout << "All positive: " << std::boolalpha << pipe.all_positive() << '\n';
+
+    // Filter by region
+    auto west = pipe.by_region("West");
+    std::cout << "\nWest sales: " << west.size() << '\n';
+
+    // Top products
+    auto top = pipe.top_products(3);
+    std::cout << "\nTop 3 products by revenue:\n";
+    std::for_each(top.begin(), top.end(), [](const auto& p) {
+        std::cout << "  " << p.first << ": $" << p.second << '\n';
+    });
+
+    // Partition
+    auto [high, low] = pipe.partition_by_value(100);
+    std::cout << "\nHigh-value: " << high.size() << "  Low-value: " << low.size() << '\n';
+
+    // Discount
+    auto discounted = pipe.apply_discount(0.10);
+    std::cout << "After 10% discount, first sale: $" << discounted[0].amount << '\n';
+}
+```
+
+Key decisions:
+- **Zero manual loops** — every operation uses a standard algorithm (§12.1–12.5).
+- **`copy_if`** for filtering, **`transform`** for mapping, **`accumulate`** for reduction (§12.2, §12.3).
+- **`partial_sort`** is more efficient than full sort when we only need top N (§12.4).
+- **`partition_copy`** splits into two output ranges in one pass (§12.3).
+- **`back_inserter`** grows output vectors automatically (§12.3).
+- All predicates are **lambdas** — concise and inline (§12.5).
+
+</details>
